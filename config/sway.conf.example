@@ -1,0 +1,14 @@
+# Add to ~/.config/sway/config
+#
+# Option A: systemd service (recommended)
+# The daemon runs as a systemd user service, keybind just toggles capture.
+# Make sure sway exports the environment for the service:
+exec systemctl --user import-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP
+exec systemctl --user start captions
+
+bindsym $mod+c exec captions toggle
+
+# Option B: sway-managed (no systemd)
+# Sway starts the daemon directly. It dies when sway exits.
+# exec captions
+# bindsym $mod+c exec captions toggle

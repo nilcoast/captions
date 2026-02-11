@@ -1,0 +1,20 @@
+[Unit]
+Description=Captions — real-time audio transcription overlay
+Documentation=https://github.com/nilcoast/captions
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/captions
+ExecStop=%h/.local/bin/captions quit
+Restart=on-failure
+RestartSec=3
+
+# Inherit Sway/Wayland environment
+# sway must export these via `exec systemctl --user import-environment`
+# or use something like dbus-update-activation-environment
+
+[Install]
+WantedBy=sway-session.target

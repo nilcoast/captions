@@ -1,0 +1,4 @@
+captions
+*.o
+nimcache/
+.claude/

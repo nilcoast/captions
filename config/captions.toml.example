@@ -1,0 +1,67 @@
+[audio]
+sample_rate = 16000
+channels = 1
+# Ring buffer duration in seconds
+buffer_seconds = 30
+# "sink" = system audio (speakers), "mic" = microphone
+source = "sink"
+
+[whisper]
+# Path to whisper.cpp GGML model file
+model_path = "~/.local/share/captions/ggml-base.en.bin"
+# Chunk duration in milliseconds (how often to run inference)
+chunk_ms = 3000
+# Overlap in milliseconds (for context continuity)
+overlap_ms = 500
+# "greedy" or "beam"
+strategy = "greedy"
+# Number of threads for whisper inference
+threads = 4
+# Language code (e.g. "en", "auto")
+language = "en"
+
+[overlay]
+# Font description (Pango format)
+font = "Sans Bold 18"
+# Text color (CSS format)
+text_color = "rgba(255, 255, 255, 0.95)"
+# Background color of the caption box
+bg_color = "rgba(0, 0, 0, 0.70)"
+# Maximum number of visible lines
+max_lines = 3
+# Margin from screen bottom in pixels
+margin_bottom = 60
+# Margin from screen sides in pixels
+margin_side = 80
+# Fade timeout in seconds (0 = no fade)
+fade_timeout = 5
+# Border radius in pixels
+border_radius = 16
+# Padding in pixels
+padding = 16
+
+[recording]
+# Base directory for saved sessions
+output_dir = "~/captions"
+# Save audio as WAV
+save_audio = true
+# Save transcript text
+save_transcript = true
+
+[summary]
+# Enable AI summary generation after session ends
+enabled = false
+# "ollama" or "openrouter"
+backend = "ollama"
+# Ollama settings
+ollama_url = "http://localhost:11434"
+ollama_model = "llama3.2"
+# OpenRouter settings
+openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
+openrouter_api_key = ""
+openrouter_model = "anthropic/claude-sonnet-4-20250514"
+# System prompt for summary generation
+prompt = "Summarize the following transcript concisely, highlighting key points and action items:"
+
+[daemon]
+socket_path = "/tmp/captions.sock"

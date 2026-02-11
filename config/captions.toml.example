@@ -49,18 +49,11 @@ save_audio = true
 save_transcript = true
 
 [summary]
-# Enable AI summary generation after session ends
-enabled = false
-# "ollama" or "openrouter"
-backend = "ollama"
-# Ollama settings
-ollama_url = "http://localhost:11434"
-ollama_model = "llama3.2"
-# OpenRouter settings
-openrouter_url = "https://openrouter.ai/api/v1/chat/completions"
-openrouter_api_key = ""
-openrouter_model = "anthropic/claude-sonnet-4-20250514"
-# System prompt for summary generation
+# Enable AI summary generation after session ends (uses `llm` CLI tool)
+enabled = true
+# Model name passed to `llm -m` (empty = llm default)
+model = ""
+# Prompt prepended to transcript
 prompt = "Summarize the following transcript concisely, highlighting key points and action items:"
 
 [daemon]

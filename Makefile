@@ -43,7 +43,7 @@ else
 endif
 
 install-model:
-	@mkdir -p $(MODEL_DIR)
+	@mkdir -p "$(MODEL_DIR)"
 	@if [ -f "$(MODEL_DIR)/ggml-base.en.bin" ]; then \
 		echo "Model already exists at $(MODEL_DIR)/ggml-base.en.bin"; \
 	else \
@@ -112,5 +112,9 @@ uninstall:
 	@echo "  rm -rf $(MODEL_DIR)"
 	@echo "  rm -rf $(HOME)/.config/captions"
 
+test-sck:
+	clang -fobjc-arc -framework Foundation -framework ScreenCaptureKit \
+		-framework CoreMedia -framework AVFAudio -o test_sck tests/test_sck.m
+
 clean:
-	rm -f captions
+	rm -f captions test_sck

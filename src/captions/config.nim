@@ -65,12 +65,15 @@ proc defaultConfig*(): AppConfig =
     sampleRate: 16000,
     channels: 1,
     bufferSeconds: 30,
-    captureMic: false,
+    captureMic: true,
     captureSink: true,
     monitorDevice: "",
   )
   result.whisper = WhisperConfig(
-    modelPath: expandHome("~/.local/share/captions/ggml-base.en.bin"),
+    modelPath: when defined(macosx):
+      expandHome("~/Library/Application Support/captions/ggml-base.en.bin")
+    else:
+      expandHome("~/.local/share/captions/ggml-base.en.bin"),
     chunkMs: 3000,
     overlapMs: 500,
     strategy: "greedy",

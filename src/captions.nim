@@ -16,6 +16,13 @@ when defined(macosx):
 else:
   import captions/[overlay, gtk4_bindings]
 
+# Module-level dispatch timer type pointer for macOS
+when defined(macosx):
+  {.emit: """
+  static const void* _nim_dispatch_timer_ptr_main = DISPATCH_SOURCE_TYPE_TIMER;
+  """.}
+  var nimDispatchTimerPtrMain {.importc: "_nim_dispatch_timer_ptr_main", nodecl.}: pointer
+
 var gShutdown: Atomic[bool]
 
 proc handleSignal(sig: cint) {.noconv.} =
@@ -99,19 +106,16 @@ proc main() =
       importc: "dispatch_resume",
       header: "<dispatch/dispatch.h>".}
 
-    var DISPATCH_SOURCE_TYPE_TIMER {.importc: "_dispatch_source_type_timer",
-                                    header: "<dispatch/dispatch.h>".}: pointer
-
     const NSEC_PER_MSEC = 1_000_000'u64
 
     proc checkShutdown(data: pointer) {.cdecl.} =
       if gShutdown.load(moRelaxed):
         let daemon = cast[Daemon](data)
         shutdownDaemon(daemon)
-        quitApp(ov)
+        quitApp(gOverlay)
 
     let mainQueue = dispatch_get_main_queue()
-    let timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mainQueue)
+    let timer = dispatch_source_create(nimDispatchTimerPtrMain, 0, 0, mainQueue)
     dispatch_source_set_event_handler_f(timer, checkShutdown)
     dispatch_source_set_timer(timer, 200 * NSEC_PER_MSEC, 200 * NSEC_PER_MSEC, 0)
     dispatch_resume(timer)

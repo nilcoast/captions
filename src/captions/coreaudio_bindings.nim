@@ -1,7 +1,7 @@
 ## Low-level importc bindings for CoreAudio Taps helper (coreaudio_helper.m).
 ## These are the raw C function imports.
 
-{.compile: "coreaudio_helper.m".}
+{.compile("coreaudio_helper.m", "-fobjc-arc").}
 {.passl: "-framework Foundation -framework AVFAudio -framework ScreenCaptureKit -framework CoreMedia".}
 
 type

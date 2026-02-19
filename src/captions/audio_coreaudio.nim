@@ -41,18 +41,18 @@ proc newAudioCapture*(cfg: AudioConfig, kind: CaptureKind, ring: ptr RingBuffer)
   result.active.store(false, moRelaxed)
   result.onSamples = nil
 
-proc start*(capture: ptr AudioCapture) =
+proc start*(capture: ptr AudioCapture): bool =
   if capture.active.load(moRelaxed):
-    return
+    return true
 
   if capture.kind != ckSink:
     error "CoreAudio Taps only supports sink (system audio) capture. Use miniaudio for microphone."
-    return
+    return false
 
   capture.device = ca_capture_new()
   if capture.device == nil:
     error "Failed to allocate CoreAudio capture device"
-    return
+    return false
 
   capture.active.store(true, moRelaxed)
 
@@ -72,14 +72,16 @@ proc start*(capture: ptr AudioCapture) =
       of -4: "failed to add audio output"
       of -5: "failed to start capture"
       of -6: "requires macOS 13.0 or later"
+      of -99: "ObjC exception (check NSLog output)"
       else: "unknown error " & $ret
     error "Failed to start CoreAudio capture: " & errMsg
     capture.active.store(false, moRelaxed)
     ca_capture_free(capture.device)
     capture.device = nil
-    return
+    return false
 
   info "CoreAudio Taps capture started: " & $capture.kind
+  return true
 
 proc stop*(capture: ptr AudioCapture) =
   if not capture.active.load(moRelaxed):

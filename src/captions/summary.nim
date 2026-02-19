@@ -187,10 +187,13 @@ proc summaryThreadProc(args: SummaryArgs) {.thread.} =
   info &"Summary saved: {outputPath}"
 
   # Open in default app
-  let p = startProcess("xdg-open", args = [outputPath], options = {poUsePath, poDaemon})
+  when defined(macosx):
+    let p = startProcess("open", args = [outputPath], options = {poUsePath, poDaemon})
+  else:
+    let p = startProcess("xdg-open", args = [outputPath], options = {poUsePath, poDaemon})
   p.close()
 
-proc spawnSummary*(cfg: SummaryConfig, transcript: string, sessionDir: string) =
+proc spawnSummary*(cfg: SummaryConfig, transcript: string, sessionDir: string) {.gcsafe.} =
   ## Fire-and-forget: spawns summary generation in a background thread.
   if not cfg.enabled:
     return
@@ -203,4 +206,5 @@ proc spawnSummary*(cfg: SummaryConfig, transcript: string, sessionDir: string) =
     warn "No summary model path configured, skipping summary"
     return
 
-  createThread(summaryThread, summaryThreadProc, (cfg, transcript, sessionDir))
+  {.cast(gcsafe).}:
+    createThread(summaryThread, summaryThreadProc, (cfg, transcript, sessionDir))

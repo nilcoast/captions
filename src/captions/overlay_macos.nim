@@ -4,7 +4,7 @@ import std/[deques, strformat, strutils]
 import ./config
 
 # Import Objective-C helpers
-{.compile: "overlay_macos.m".}
+{.compile("overlay_macos.m", "-fobjc-arc").}
 {.passL: "-framework Cocoa -framework QuartzCore".}
 
 type
@@ -68,8 +68,10 @@ proc dispatch_source_cancel*(source: DispatchSource) {.
   importc: "dispatch_source_cancel",
   header: "<dispatch/dispatch.h>".}
 
-var DISPATCH_SOURCE_TYPE_TIMER* {.importc: "_dispatch_source_type_timer",
-                                  header: "<dispatch/dispatch.h>".}: pointer
+{.emit: """
+static const void* _nim_dispatch_timer_ptr = DISPATCH_SOURCE_TYPE_TIMER;
+""".}
+var DISPATCH_SOURCE_TYPE_TIMER* {.importc: "_nim_dispatch_timer_ptr", nodecl.}: pointer
 
 const NSEC_PER_SEC = 1_000_000_000'u64
 
@@ -176,8 +178,11 @@ proc addLine*(o: Overlay, text: string) =
     dispatch_source_set_event_handler_f(timer, fadeCallback)
 
     # Set timer to fire once after fadeTimeout seconds
-    let timeoutNs = uint64(o.cfg.fadeTimeout) * NSEC_PER_SEC
-    dispatch_source_set_timer(timer, timeoutNs, 0, 0)
+    proc dispatch_time(when_val: uint64, delta: int64): uint64 {.
+      importc: "dispatch_time", header: "<dispatch/dispatch.h>".}
+    let DISPATCH_TIME_NOW = 0'u64
+    let timeoutNs = int64(o.cfg.fadeTimeout) * int64(NSEC_PER_SEC)
+    dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, timeoutNs), 0, 0)
     dispatch_resume(timer)
 
 proc clearLines*(o: Overlay) =

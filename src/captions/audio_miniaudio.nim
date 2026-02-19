@@ -60,14 +60,14 @@ proc newAudioCapture*(cfg: AudioConfig, kind: CaptureKind, ring: ptr RingBuffer)
   result.active.store(false, moRelaxed)
   result.onSamples = nil
 
-proc start*(capture: ptr AudioCapture) =
+proc start*(capture: ptr AudioCapture): bool =
   if capture.active.load(moRelaxed):
-    return
+    return true
 
   capture.device = ma_capture_new()
   if capture.device == nil:
     error "Failed to allocate miniaudio capture device"
-    return
+    return false
 
   # Determine device name for miniaudio
   var deviceName: string = ""
@@ -92,7 +92,7 @@ proc start*(capture: ptr AudioCapture) =
              "Set [audio] monitor_device in config, or ensure PulseAudio/PipeWire is running."
         ma_capture_free(capture.device)
         capture.device = nil
-        return
+        return false
 
   capture.active.store(true, moRelaxed)
 
@@ -116,10 +116,11 @@ proc start*(capture: ptr AudioCapture) =
     capture.active.store(false, moRelaxed)
     ma_capture_free(capture.device)
     capture.device = nil
-    return
+    return false
 
   info "Audio capture started: " & $capture.kind &
        (if deviceName != "": " (" & deviceName & ")" else: " (default)")
+  return true
 
 proc stop*(capture: ptr AudioCapture) =
   if not capture.active.load(moRelaxed):

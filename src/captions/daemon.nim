@@ -42,6 +42,15 @@ when defined(macosx):
     importc: "dispatch_async_f",
     header: "<dispatch/dispatch.h>".}
 
+  {.emit: """
+  static const void* _nim_dispatch_timer_ptr_daemon = DISPATCH_SOURCE_TYPE_TIMER;
+  """.}
+  var nimDispatchTimerPtrDaemon {.importc: "_nim_dispatch_timer_ptr_daemon", nodecl.}: pointer
+
+  proc dispatch_get_global_queue(qos_class: clong, flags: culong): DispatchQueue {.
+    importc: "dispatch_get_global_queue",
+    header: "<dispatch/dispatch.h>".}
+
   template dispatchAsync(callback: proc(data: pointer): cint {.cdecl.}) =
     proc wrapper(ctx: pointer) {.cdecl.} = discard callback(nil)
     let mainQueue = dispatch_get_main_queue()
@@ -54,8 +63,8 @@ type
   SessionState = object
     micRing: ptr RingBuffer
     sinkRing: ptr RingBuffer
-    micCapture: ptr AudioCapture
-    sinkCapture: ptr AudioCapture
+    micCapture: ptr audio_mic.AudioCapture
+    sinkCapture: ptr audio_sink.AudioCapture
     transcriber: ptr Transcriber
     wavRecorder: ptr WavRecorder
     sessionDir: string
@@ -83,7 +92,7 @@ proc startSession(d: Daemon) =
   if d.isActive:
     return
 
-  info "Starting capture session"
+  info "Starting capture session (thread=" & $getThreadId() & ")"
 
   let sess = cast[ptr SessionState](allocShared0(sizeof(SessionState)))
   initLock(sess.transcriptLock)
@@ -134,7 +143,35 @@ proc startSession(d: Daemon) =
     if sess.sinkCapture != nil:
       sess.sinkCapture.onSamples = recordCb
 
-  # Init transcriber with all active ring buffers
+  # Start captures
+  if sess.micCapture != nil:
+    if not audio_mic.start(sess.micCapture):
+      warn "Mic capture failed to start"
+      audio_mic.destroy(sess.micCapture)
+      sess.micCapture = nil
+      if sess.micRing != nil:
+        rings.del(rings.find(sess.micRing))
+        destroyRingBuffer(sess.micRing)
+        sess.micRing = nil
+  if sess.sinkCapture != nil:
+    if not audio_sink.start(sess.sinkCapture):
+      warn "Sink capture failed to start, continuing with mic-only"
+      audio_sink.destroy(sess.sinkCapture)
+      sess.sinkCapture = nil
+      # Remove sink ring from the rings list
+      if sess.sinkRing != nil:
+        rings.del(rings.find(sess.sinkRing))
+        destroyRingBuffer(sess.sinkRing)
+        sess.sinkRing = nil
+
+  # Check we still have at least one working source
+  if rings.len == 0:
+    warn "All audio sources failed to start"
+    deallocShared(sess)
+    d.session = nil
+    return
+
+  # Re-init transcriber with surviving ring buffers (in case sink was removed)
   sess.transcriber = newTranscriber(d.cfg.whisper, d.cfg.audio, rings, addr sess.active)
 
   # Transcription callback — sends text to overlay + collects transcript
@@ -146,11 +183,6 @@ proc startSession(d: Daemon) =
     sess.transcript.add(text)
     release(sess.transcriptLock)
 
-  # Start captures and transcription
-  if sess.micCapture != nil:
-    audio_mic.start(sess.micCapture)
-  if sess.sinkCapture != nil:
-    audio_sink.start(sess.sinkCapture)
   start(sess.transcriber)
 
   # Show overlay via platform-specific dispatch
@@ -229,28 +261,6 @@ proc shutdownDaemon*(d: Daemon) =
     return 0
   dispatchAsync(quitCb)
 
-proc handleCommand(d: Daemon, cmd: string): string =
-  let c = cmd.strip().toLowerAscii()
-  case c
-  of "toggle":
-    if d.isActive:
-      stopSession(d)
-      "stopped"
-    else:
-      startSession(d)
-      "started"
-  of "stop":
-    if d.isActive:
-      stopSession(d)
-    "stopped"
-  of "status":
-    if d.isActive: "active" else: "idle"
-  of "quit":
-    shutdownDaemon(d)
-    "bye"
-  else:
-    "unknown command: " & c
-
 proc setupSocket(d: Daemon) =
   let path = d.cfg.daemon.socketPath
   # Always try to remove stale socket (fileExists doesn't reliably detect unix sockets)
@@ -266,6 +276,70 @@ proc setupSocket(d: Daemon) =
 
 # We store the Daemon ref in a global so the GLib callback can access it
 var gDaemon: Daemon = nil
+
+# macOS: dedicated Nim thread for session ops so ORC and ScreenCaptureKit work correctly.
+# ScreenCaptureKit delivers completion handlers on the main queue, so session ops
+# must NOT run on the main queue. And Nim ORC requires a Nim-created thread for GC safety.
+when defined(macosx):
+  var nimSessionChan: Channel[string]
+  var nimSessionThread: Thread[Daemon]
+
+  proc nimSessionLoop(d: Daemon) {.thread, gcsafe.} =
+    info "nimSessionLoop started (thread=" & $getThreadId() & ")"
+    while true:
+      let cmd = nimSessionChan.recv()
+      info "nimSessionLoop received: " & cmd & " (thread=" & $getThreadId() & ")"
+      case cmd
+      of "start":
+        if not d.isActive:
+          startSession(d)
+      of "stop":
+        if d.isActive:
+          stopSession(d)
+      of "quit":
+        break
+      else:
+        discard
+
+  # cdecl shims called from GCD — just forward to the Nim channel
+  proc startSessionBg(ctx: pointer) {.cdecl.} =
+    info "startSessionBg dispatched (thread=" & $getThreadId() & ")"
+    nimSessionChan.send("start")
+
+  proc stopSessionBg(ctx: pointer) {.cdecl.} =
+    info "stopSessionBg dispatched (thread=" & $getThreadId() & ")"
+    nimSessionChan.send("stop")
+
+proc handleCommand(d: Daemon, cmd: string): string =
+  let c = cmd.strip().toLowerAscii()
+  case c
+  of "toggle":
+    if d.isActive:
+      when defined(macosx):
+        dispatch_async_f(dispatch_get_global_queue(0, 0), nil, stopSessionBg)
+      else:
+        stopSession(d)
+      "stopped"
+    else:
+      when defined(macosx):
+        dispatch_async_f(dispatch_get_global_queue(0, 0), nil, startSessionBg)
+      else:
+        startSession(d)
+      "started"
+  of "stop":
+    when defined(macosx):
+      dispatch_async_f(dispatch_get_global_queue(0, 0), nil, stopSessionBg)
+    else:
+      if d.isActive:
+        stopSession(d)
+    "stopped"
+  of "status":
+    if d.isActive: "active" else: "idle"
+  of "quit":
+    shutdownDaemon(d)
+    "bye"
+  else:
+    "unknown command: " & c
 
 proc pollSocketCb(data: pointer): cint {.cdecl.} =
   ## Called periodically from GLib timeout. Returns 1 to continue, 0 to stop.
@@ -302,6 +376,9 @@ proc startDaemon*(d: Daemon) =
   d.running = true
   gDaemon = d
   setupSocket(d)
+  when defined(macosx):
+    nimSessionChan.open()
+    createThread(nimSessionThread, nimSessionLoop, d)
 
   # Add platform-specific timeout to poll the Unix socket every 100ms
   when defined(macosx):
@@ -326,16 +403,13 @@ proc startDaemon*(d: Daemon) =
       importc: "dispatch_resume",
       header: "<dispatch/dispatch.h>".}
 
-    var DISPATCH_SOURCE_TYPE_TIMER {.importc: "_dispatch_source_type_timer",
-                                    header: "<dispatch/dispatch.h>".}: pointer
-
     const NSEC_PER_MSEC = 1_000_000'u64
 
     proc pollWrapper(ctx: pointer) {.cdecl.} =
       discard pollSocketCb(nil)
 
     let mainQueue = dispatch_get_main_queue()
-    let timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mainQueue)
+    let timer = dispatch_source_create(nimDispatchTimerPtrDaemon, 0, 0, mainQueue)
     dispatch_source_set_event_handler_f(timer, pollWrapper)
     dispatch_source_set_timer(timer, 100 * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC, 0)
     dispatch_resume(timer)
@@ -344,6 +418,10 @@ proc startDaemon*(d: Daemon) =
     discard g_timeout_add(100, pollSocketCb, nil)
 
 proc stopDaemon*(d: Daemon) =
+  when defined(macosx):
+    nimSessionChan.send("quit")
+    joinThread(nimSessionThread)
+    nimSessionChan.close()
   if d.isActive:
     stopSession(d)
   d.running = false

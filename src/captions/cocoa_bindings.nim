@@ -175,7 +175,10 @@ proc dispatch_source_cancel*(source: DispatchSource) {.
   importc: "dispatch_source_cancel",
   header: "<dispatch/dispatch.h>".}
 
-var DISPATCH_SOURCE_TYPE_TIMER* {.importc: "_dispatch_source_type_timer", header: "<dispatch/dispatch.h>".}: pointer
+{.emit: """
+static const void* _nim_dispatch_timer_ptr4 = DISPATCH_SOURCE_TYPE_TIMER;
+""".}
+var DISPATCH_SOURCE_TYPE_TIMER* {.importc: "_nim_dispatch_timer_ptr4", nodecl.}: pointer
 
 proc DISPATCH_TIME_NOW*(): uint64 {.importc: "DISPATCH_TIME_NOW", header: "<dispatch/dispatch.h>".}
 

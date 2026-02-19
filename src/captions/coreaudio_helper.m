@@ -13,7 +13,7 @@
 
 typedef void (*CoreAudioSamplesCallback)(const float* data, int count, void* userdata);
 
-@interface CoreAudioCapture : NSObject
+@interface CoreAudioCapture : NSObject <SCStreamOutput>
 @property (nonatomic, strong) SCStream *stream;
 @property (nonatomic, strong) AVAudioConverter *converter;
 @property (nonatomic, assign) CoreAudioSamplesCallback callback;
@@ -42,100 +42,114 @@ typedef void (*CoreAudioSamplesCallback)(const float* data, int count, void* use
                   callback:(CoreAudioSamplesCallback)cb
                   userdata:(void*)ud {
     if (@available(macOS 13.0, *)) {
-        self.callback = cb;
-        self.userdata = ud;
-        self.targetSampleRate = sampleRate;
-        self.targetChannels = channels;
+        @try {
+            // Nim-created threads don't have an autorelease pool — we need one for ObjC.
+            @autoreleasepool {
+            self.callback = cb;
+            self.userdata = ud;
+            self.targetSampleRate = sampleRate;
+            self.targetChannels = channels;
 
-        // Get shareable content (system audio)
-        dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-        __block NSError *contentError = nil;
-        __block SCShareableContent *content = nil;
+            // Get shareable content (system audio)
+            dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+            __block NSError *contentError = nil;
+            __block SCShareableContent *content = nil;
 
-        [SCShareableContent getShareableContentExcludingDesktopWindows:YES
-                                                        onScreenWindowsOnly:NO
-                                                        completionHandler:^(SCShareableContent *shareableContent, NSError *error) {
-            content = shareableContent;
-            contentError = error;
-            dispatch_semaphore_signal(sem);
-        }];
+            [SCShareableContent getShareableContentExcludingDesktopWindows:YES
+                                                            onScreenWindowsOnly:NO
+                                                            completionHandler:^(SCShareableContent *shareableContent, NSError *error) {
+                content = shareableContent;
+                contentError = error;
+                dispatch_semaphore_signal(sem);
+            }];
 
-        // Wait for content (5 second timeout)
-        if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
-            NSLog(@"CoreAudio: Timeout waiting for shareable content");
-            return -1;
+            // Wait for content (5 second timeout)
+            if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+                NSLog(@"CoreAudio: Timeout waiting for shareable content");
+                return -1;
+            }
+
+            if (contentError != nil) {
+                NSLog(@"CoreAudio: Failed to get shareable content: %@", contentError.localizedDescription);
+                return -1;
+            }
+
+            // Configure stream for audio-only capture
+            SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
+            config.capturesAudio = YES;
+            config.sampleRate = sampleRate;
+            config.channelCount = channels;
+
+            // Minimum required screen configuration (not capturing video, but required by API).
+            // pixelFormat MUST be set explicitly — without it, CG fails to create the
+            // internal stream on macOS 15+ (CoreGraphicsErrorDomain code=1003).
+            config.width = 2;
+            config.height = 2;
+            config.minimumFrameInterval = CMTimeMake(1, 1);
+            config.pixelFormat = 'BGRA';  // kCVPixelFormatType_32BGRA
+            if (@available(macOS 14.0, *)) {
+                config.excludesCurrentProcessAudio = YES;
+            }
+
+            // Create content filter for display (audio capture requires a display even if we don't capture video)
+            SCDisplay *display = content.displays.firstObject;
+            if (display == nil) {
+                NSLog(@"CoreAudio: No displays available");
+                return -2;
+            }
+
+            SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
+                                                               excludingWindows:@[]];
+
+            // Create stream (initWithFilter:configuration:delegate: does not take NSError**)
+            self.stream = [[SCStream alloc] initWithFilter:filter
+                                             configuration:config
+                                                  delegate:nil];
+
+            if (self.stream == nil) {
+                NSLog(@"CoreAudio: SCStream alloc returned nil");
+                return -3;
+            }
+
+            // Add audio output handler
+            NSError *outputError = nil;
+            [self.stream addStreamOutput:self
+                                    type:SCStreamOutputTypeAudio
+                      sampleHandlerQueue:dispatch_queue_create("audio.capture.queue", DISPATCH_QUEUE_SERIAL)
+                                   error:&outputError];
+
+            if (outputError != nil) {
+                NSLog(@"CoreAudio: Failed to add audio output: %@", outputError.localizedDescription);
+                return -4;
+            }
+
+            // Start streaming
+            dispatch_semaphore_t startSem = dispatch_semaphore_create(0);
+            __block NSError *startError = nil;
+
+            [self.stream startCaptureWithCompletionHandler:^(NSError *error) {
+                startError = error;
+                dispatch_semaphore_signal(startSem);
+            }];
+
+            if (dispatch_semaphore_wait(startSem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
+                NSLog(@"CoreAudio: Timeout starting capture");
+                return -5;
+            }
+
+            if (startError != nil) {
+                NSLog(@"CoreAudio: Failed to start capture: %@", startError.localizedDescription);
+                return -5;
+            }
+
+            self.isRunning = YES;
+            NSLog(@"CoreAudio: Started capture at %d Hz, %d channels", sampleRate, channels);
+            return 0;
+            } // @autoreleasepool
+        } @catch (NSException *exception) {
+            NSLog(@"CoreAudio: ObjC exception in startWithSampleRate: %@ — %@", exception.name, exception.reason);
+            return -99;
         }
-
-        if (contentError != nil) {
-            NSLog(@"CoreAudio: Failed to get shareable content: %@", contentError.localizedDescription);
-            return -1;
-        }
-
-        // Configure stream for audio-only capture
-        SCStreamConfiguration *config = [[SCStreamConfiguration alloc] init];
-        config.capturesAudio = YES;
-        config.sampleRate = sampleRate;
-        config.channelCount = channels;
-
-        // Minimum required screen configuration (not capturing video, but required by API)
-        config.width = 1;
-        config.height = 1;
-        config.minimumFrameInterval = CMTimeMake(1, 1);
-
-        // Create content filter for display (audio capture requires a display even if we don't capture video)
-        SCDisplay *display = content.displays.firstObject;
-        if (display == nil) {
-            NSLog(@"CoreAudio: No displays available");
-            return -2;
-        }
-
-        SCContentFilter *filter = [[SCContentFilter alloc] initWithDisplay:display
-                                                           excludingWindows:@[]];
-
-        // Create stream
-        NSError *streamError = nil;
-        self.stream = [[SCStream alloc] initWithFilter:filter
-                                         configuration:config
-                                              delegate:nil];
-
-        if (streamError != nil) {
-            NSLog(@"CoreAudio: Failed to create stream: %@", streamError.localizedDescription);
-            return -3;
-        }
-
-        // Add audio output handler
-        [self.stream addStreamOutput:self
-                                type:SCStreamOutputTypeAudio
-                  sampleHandlerQueue:dispatch_queue_create("audio.capture.queue", DISPATCH_QUEUE_SERIAL)
-                               error:&streamError];
-
-        if (streamError != nil) {
-            NSLog(@"CoreAudio: Failed to add audio output: %@", streamError.localizedDescription);
-            return -4;
-        }
-
-        // Start streaming
-        dispatch_semaphore_t startSem = dispatch_semaphore_create(0);
-        __block NSError *startError = nil;
-
-        [self.stream startCaptureWithCompletionHandler:^(NSError *error) {
-            startError = error;
-            dispatch_semaphore_signal(startSem);
-        }];
-
-        if (dispatch_semaphore_wait(startSem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0) {
-            NSLog(@"CoreAudio: Timeout starting capture");
-            return -5;
-        }
-
-        if (startError != nil) {
-            NSLog(@"CoreAudio: Failed to start capture: %@", startError.localizedDescription);
-            return -5;
-        }
-
-        self.isRunning = YES;
-        NSLog(@"CoreAudio: Started capture at %d Hz, %d channels", sampleRate, channels);
-        return 0;
     } else {
         NSLog(@"CoreAudio: Requires macOS 13.0 or later");
         return -6;
@@ -243,11 +257,16 @@ typedef void (*CoreAudioSamplesCallback)(const float* data, int count, void* use
 
 @end
 
-// C API for Nim interop
+// --- C API for Nim interop ---
 
 void* ca_capture_new(void) {
-    CoreAudioCapture *capture = [[CoreAudioCapture alloc] init];
-    return (__bridge_retained void*)capture;
+    @try {
+        CoreAudioCapture *capture = [[CoreAudioCapture alloc] init];
+        return (__bridge_retained void*)capture;
+    } @catch (NSException *exception) {
+        NSLog(@"CoreAudio: ObjC exception in ca_capture_new: %@ — %@", exception.name, exception.reason);
+        return NULL;
+    }
 }
 
 void ca_capture_free(void* cap) {

@@ -119,8 +119,8 @@ proc generateSummary*(cfg: SummaryConfig, transcript: string): string =
   # Set up sampler chain: penalties before temperature/sampling
   var samplerParams = llama_sampler_chain_default_params()
   let sampler = llama_sampler_chain_init(samplerParams)
-  llama_sampler_chain_add(sampler, llama_sampler_init_penalties(256, 1.3, 0.0, 0.0))
-  llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.3))
+  llama_sampler_chain_add(sampler, llama_sampler_init_penalties(512, 1.5, 0.3, 0.3))
+  llama_sampler_chain_add(sampler, llama_sampler_init_temp(0.1))
   llama_sampler_chain_add(sampler, llama_sampler_init_min_p(0.1, 1))
   llama_sampler_chain_add(sampler, llama_sampler_init_dist(0))
   defer: llama_sampler_free(sampler)

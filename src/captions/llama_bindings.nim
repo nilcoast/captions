@@ -1,8 +1,25 @@
 ## Hand-written llama.cpp C API bindings.
 ## Only the subset needed for text generation (summarization).
 
-{.passl: "-lllama".}
-{.passc: "-I/usr/local/include".}
+when defined(macosx):
+  # macOS with Metal GPU support
+  # Build llama.cpp with Metal support using:
+  #   cmake -B build -DGGML_METAL=ON -DBUILD_SHARED_LIBS=ON
+  #   cmake --build build --config Release
+  #   sudo cmake --install build
+  {.passl: "-framework Metal".}
+  {.passl: "-framework MetalPerformanceShaders".}
+  {.passl: "-framework Foundation".}
+  {.passl: "-lllama".}
+  # Try Homebrew ARM64 path first, fallback to Intel path
+  when defined(arm64):
+    {.passc: "-I/opt/homebrew/include".}
+  else:
+    {.passc: "-I/usr/local/include".}
+else:
+  # Linux and other platforms
+  {.passl: "-lllama".}
+  {.passc: "-I/usr/local/include".}
 
 type
   LlamaModel* {.importc: "struct llama_model", header: "llama.h", incompleteStruct.} = object

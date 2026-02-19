@@ -8,7 +8,13 @@
 ##   captions quit         Shut down daemon
 
 import std/[os, strutils, logging, atomics, posix]
-import captions/[config, daemon, overlay, gtk4_bindings]
+import captions/[config, daemon]
+
+# Platform-specific overlay imports
+when defined(macosx):
+  import captions/overlay_macos as overlay
+else:
+  import captions/[overlay, gtk4_bindings]
 
 var gShutdown: Atomic[bool]
 
@@ -56,27 +62,73 @@ proc main() =
 
   var d = newDaemon(cfg)
 
-  # Signal handling — set atomic flag, GLib poll picks it up
+  # Signal handling — set atomic flag
   gShutdown.store(false, moRelaxed)
   signal(SIGINT, handleSignal)
   signal(SIGTERM, handleSignal)
 
-  # GLib timer checks the shutdown flag
-  proc checkShutdown(data: pointer): cint {.cdecl.} =
-    if gShutdown.load(moRelaxed):
-      let daemon = cast[Daemon](data)
-      shutdownDaemon(daemon)
-      return 0  # stop timer
-    return 1  # keep running
-  discard g_timeout_add(200, checkShutdown, cast[pointer](d))
-
   # Init overlay
   let ov = initOverlay(cfg.overlay)
 
-  # Start daemon (sets up socket + GLib polling)
+  # Platform-specific timer setup for shutdown checking
+  when defined(macosx):
+    # Use dispatch timer for macOS
+    type DispatchQueue {.importc: "dispatch_queue_t", header: "<dispatch/dispatch.h>".} = pointer
+    type DispatchSource {.importc: "dispatch_source_t", header: "<dispatch/dispatch.h>".} = pointer
+
+    proc dispatch_get_main_queue(): DispatchQueue {.
+      importc: "dispatch_get_main_queue",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_source_create(stype: pointer, handle: culong, mask: culong,
+                                queue: DispatchQueue): DispatchSource {.
+      importc: "dispatch_source_create",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_source_set_event_handler_f(source: DispatchSource,
+                                            handler: proc(ctx: pointer) {.cdecl.}) {.
+      importc: "dispatch_source_set_event_handler_f",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_source_set_timer(source: DispatchSource, start: uint64,
+                                  interval: uint64, leeway: uint64) {.
+      importc: "dispatch_source_set_timer",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_resume(obj: pointer) {.
+      importc: "dispatch_resume",
+      header: "<dispatch/dispatch.h>".}
+
+    var DISPATCH_SOURCE_TYPE_TIMER {.importc: "_dispatch_source_type_timer",
+                                    header: "<dispatch/dispatch.h>".}: pointer
+
+    const NSEC_PER_MSEC = 1_000_000'u64
+
+    proc checkShutdown(data: pointer) {.cdecl.} =
+      if gShutdown.load(moRelaxed):
+        let daemon = cast[Daemon](data)
+        shutdownDaemon(daemon)
+        quitApp(ov)
+
+    let mainQueue = dispatch_get_main_queue()
+    let timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mainQueue)
+    dispatch_source_set_event_handler_f(timer, checkShutdown)
+    dispatch_source_set_timer(timer, 200 * NSEC_PER_MSEC, 200 * NSEC_PER_MSEC, 0)
+    dispatch_resume(timer)
+  else:
+    # Use GLib timer for Linux
+    proc checkShutdown(data: pointer): cint {.cdecl.} =
+      if gShutdown.load(moRelaxed):
+        let daemon = cast[Daemon](data)
+        shutdownDaemon(daemon)
+        return 0  # stop timer
+      return 1  # keep running
+    discard g_timeout_add(200, checkShutdown, cast[pointer](d))
+
+  # Start daemon (sets up socket + polling)
   startDaemon(d)
 
-  # Run GTK application main loop (blocks until quit)
+  # Run application main loop (blocks until quit)
   runApp(ov)
 
   # Cleanup

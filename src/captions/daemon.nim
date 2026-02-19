@@ -1,15 +1,54 @@
-## Unix socket control server using GLib timeout polling.
+## Unix socket control server using platform-specific event loops.
 ## Handles toggle/stop/status commands from the CLI client.
 
 import std/[os, net, nativesockets, atomics, strutils, logging, strformat, locks]
-import ./gtk4_bindings
 import ./config
 import ./audio
-import ./audio_miniaudio
+
+# Platform-specific event loop bindings
+when not defined(macosx):
+  import ./gtk4_bindings
+
+# Platform-conditional audio backends
+when defined(macosx):
+  # macOS: Use miniaudio for mic, CoreAudio Taps for sink
+  import ./audio_miniaudio as audio_mic
+  import ./audio_coreaudio as audio_sink
+else:
+  # Linux/other: Use miniaudio for both mic and sink (PulseAudio/PipeWire monitor)
+  import ./audio_miniaudio as audio_mic
+  import ./audio_miniaudio as audio_sink
+
 import ./transcribe
-import ./overlay
 import ./recorder
 import ./summary
+
+# Platform-conditional overlay import
+when defined(macosx):
+  import ./overlay_macos as overlay
+else:
+  import ./overlay
+
+# Platform-specific dispatch helpers
+when defined(macosx):
+  type DispatchQueue {.importc: "dispatch_queue_t", header: "<dispatch/dispatch.h>".} = pointer
+
+  proc dispatch_get_main_queue(): DispatchQueue {.
+    importc: "dispatch_get_main_queue",
+    header: "<dispatch/dispatch.h>".}
+
+  proc dispatch_async_f(queue: DispatchQueue, context: pointer,
+                        work: proc(ctx: pointer) {.cdecl.}) {.
+    importc: "dispatch_async_f",
+    header: "<dispatch/dispatch.h>".}
+
+  template dispatchAsync(callback: proc(data: pointer): cint {.cdecl.}) =
+    proc wrapper(ctx: pointer) {.cdecl.} = discard callback(nil)
+    let mainQueue = dispatch_get_main_queue()
+    dispatch_async_f(mainQueue, nil, wrapper)
+else:
+  template dispatchAsync(callback: proc(data: pointer): cint {.cdecl.}) =
+    discard g_idle_add(callback, nil)
 
 type
   SessionState = object
@@ -61,12 +100,12 @@ proc startSession(d: Daemon) =
 
   if d.cfg.audio.captureMic:
     sess.micRing = initRingBuffer(d.cfg.audio.bufferSeconds, d.cfg.audio.sampleRate)
-    sess.micCapture = newAudioCapture(d.cfg.audio, ckMic, sess.micRing)
+    sess.micCapture = audio_mic.newAudioCapture(d.cfg.audio, ckMic, sess.micRing)
     rings.add(sess.micRing)
 
   if d.cfg.audio.captureSink:
     sess.sinkRing = initRingBuffer(d.cfg.audio.bufferSeconds, d.cfg.audio.sampleRate)
-    sess.sinkCapture = newAudioCapture(d.cfg.audio, ckSink, sess.sinkRing)
+    sess.sinkCapture = audio_sink.newAudioCapture(d.cfg.audio, ckSink, sess.sinkRing)
     rings.add(sess.sinkRing)
 
   if rings.len == 0:
@@ -109,16 +148,16 @@ proc startSession(d: Daemon) =
 
   # Start captures and transcription
   if sess.micCapture != nil:
-    start(sess.micCapture)
+    audio_mic.start(sess.micCapture)
   if sess.sinkCapture != nil:
-    start(sess.sinkCapture)
+    audio_sink.start(sess.sinkCapture)
   start(sess.transcriber)
 
-  # Show overlay via idle callback
+  # Show overlay via platform-specific dispatch
   proc showCb(data: pointer): cint {.cdecl.} =
     if gOverlay != nil: showOverlay(gOverlay)
     return 0
-  discard g_idle_add(showCb, nil)
+  dispatchAsync(showCb)
 
   info "Session started"
 
@@ -137,9 +176,9 @@ proc stopSession(d: Daemon) =
 
   # Stop audio captures
   if sess.micCapture != nil:
-    stop(sess.micCapture)
+    audio_mic.stop(sess.micCapture)
   if sess.sinkCapture != nil:
-    stop(sess.sinkCapture)
+    audio_sink.stop(sess.sinkCapture)
 
   # Finalize WAV
   if sess.wavRecorder != nil:
@@ -154,11 +193,11 @@ proc stopSession(d: Daemon) =
     writeFile(path, sess.transcript)
     info &"Transcript saved: {path}"
 
-  # Hide overlay via idle callback
+  # Hide overlay via platform-specific dispatch
   proc hideCb(data: pointer): cint {.cdecl.} =
     if gOverlay != nil: hideOverlay(gOverlay)
     return 0
-  discard g_idle_add(hideCb, nil)
+  dispatchAsync(hideCb)
 
   # Spawn summary generation (background thread — non-blocking)
   spawnSummary(d.cfg.summary, sess.transcript, sess.sessionDir)
@@ -166,9 +205,9 @@ proc stopSession(d: Daemon) =
   # Cleanup
   destroy(sess.transcriber)
   if sess.micCapture != nil:
-    destroy(sess.micCapture)
+    audio_mic.destroy(sess.micCapture)
   if sess.sinkCapture != nil:
-    destroy(sess.sinkCapture)
+    audio_sink.destroy(sess.sinkCapture)
   if sess.micRing != nil:
     destroyRingBuffer(sess.micRing)
   if sess.sinkRing != nil:
@@ -180,7 +219,7 @@ proc stopSession(d: Daemon) =
   info "Session stopped"
 
 proc shutdownDaemon*(d: Daemon) =
-  ## Graceful shutdown — safe to call from GLib context (e.g. signal check timer).
+  ## Graceful shutdown — safe to call from platform event loop context.
   if d.isActive:
     stopSession(d)
   d.running = false
@@ -188,7 +227,7 @@ proc shutdownDaemon*(d: Daemon) =
     if gOverlay != nil:
       quitApp(gOverlay)
     return 0
-  discard g_idle_add(quitCb, nil)
+  dispatchAsync(quitCb)
 
 proc handleCommand(d: Daemon, cmd: string): string =
   let c = cmd.strip().toLowerAscii()
@@ -264,8 +303,45 @@ proc startDaemon*(d: Daemon) =
   gDaemon = d
   setupSocket(d)
 
-  # Add GLib timeout to poll the Unix socket every 100ms
-  discard g_timeout_add(100, pollSocketCb, nil)
+  # Add platform-specific timeout to poll the Unix socket every 100ms
+  when defined(macosx):
+    type DispatchSource {.importc: "dispatch_source_t", header: "<dispatch/dispatch.h>".} = pointer
+
+    proc dispatch_source_create(stype: pointer, handle: culong, mask: culong,
+                                queue: DispatchQueue): DispatchSource {.
+      importc: "dispatch_source_create",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_source_set_event_handler_f(source: DispatchSource,
+                                            handler: proc(ctx: pointer) {.cdecl.}) {.
+      importc: "dispatch_source_set_event_handler_f",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_source_set_timer(source: DispatchSource, start: uint64,
+                                  interval: uint64, leeway: uint64) {.
+      importc: "dispatch_source_set_timer",
+      header: "<dispatch/dispatch.h>".}
+
+    proc dispatch_resume(obj: pointer) {.
+      importc: "dispatch_resume",
+      header: "<dispatch/dispatch.h>".}
+
+    var DISPATCH_SOURCE_TYPE_TIMER {.importc: "_dispatch_source_type_timer",
+                                    header: "<dispatch/dispatch.h>".}: pointer
+
+    const NSEC_PER_MSEC = 1_000_000'u64
+
+    proc pollWrapper(ctx: pointer) {.cdecl.} =
+      discard pollSocketCb(nil)
+
+    let mainQueue = dispatch_get_main_queue()
+    let timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, mainQueue)
+    dispatch_source_set_event_handler_f(timer, pollWrapper)
+    dispatch_source_set_timer(timer, 100 * NSEC_PER_MSEC, 100 * NSEC_PER_MSEC, 0)
+    dispatch_resume(timer)
+  else:
+    # GLib timeout to poll the Unix socket every 100ms
+    discard g_timeout_add(100, pollSocketCb, nil)
 
 proc stopDaemon*(d: Daemon) =
   if d.isActive:

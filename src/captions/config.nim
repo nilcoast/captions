@@ -95,8 +95,11 @@ proc defaultConfig*(): AppConfig =
   )
   result.summary = SummaryConfig(
     enabled: true,
-    modelPath: expandHome("~/.local/share/captions/phi-3.1-mini-128k-instruct-q4_k_m.gguf"),
-    prompt: "Summarize the following transcript concisely, highlighting key points and action items:",
+    modelPath: when defined(macosx):
+      expandHome("~/Library/Application Support/captions/qwen2.5-7b-instruct-q4_k_m.gguf")
+    else:
+      expandHome("~/.local/share/captions/qwen2.5-7b-instruct-q4_k_m.gguf"),
+    prompt: "You are a precise summarization assistant. Summarize ONLY the information present in the following transcript. Do not add speculation or external information. Focus on:\n- Key topics discussed\n- Important points mentioned\n- Action items or decisions (if any)\nBe factual and concise.",
     gpuLayers: -1,
     maxTokens: 256,
   )

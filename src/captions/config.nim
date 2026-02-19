@@ -8,7 +8,9 @@ type
     sampleRate*: int
     channels*: int
     bufferSeconds*: int
-    source*: string  # "sink" (system audio) or "mic"
+    captureMic*: bool      # capture microphone input
+    captureSink*: bool     # capture system audio (sink monitor)
+    monitorDevice*: string # explicit monitor source name (auto-detect if empty)
 
   WhisperConfig* = object
     modelPath*: string
@@ -36,8 +38,10 @@ type
 
   SummaryConfig* = object
     enabled*: bool
-    model*: string   # llm model name (e.g. "4o-mini", "claude-3.5-sonnet"), empty = default
+    modelPath*: string  # path to GGUF model file
     prompt*: string
+    gpuLayers*: int     # number of GPU layers to offload (-1 = all, 0 = CPU only)
+    maxTokens*: int     # max tokens for summary output
 
   DaemonConfig* = object
     socketPath*: string
@@ -61,7 +65,9 @@ proc defaultConfig*(): AppConfig =
     sampleRate: 16000,
     channels: 1,
     bufferSeconds: 30,
-    source: "sink",
+    captureMic: false,
+    captureSink: true,
+    monitorDevice: "",
   )
   result.whisper = WhisperConfig(
     modelPath: expandHome("~/.local/share/captions/ggml-base.en.bin"),
@@ -89,8 +95,10 @@ proc defaultConfig*(): AppConfig =
   )
   result.summary = SummaryConfig(
     enabled: true,
-    model: "",
+    modelPath: expandHome("~/.local/share/captions/phi-3.1-mini-128k-instruct-q4_k_m.gguf"),
     prompt: "Summarize the following transcript concisely, highlighting key points and action items:",
+    gpuLayers: -1,
+    maxTokens: 256,
   )
   result.daemon = DaemonConfig(
     socketPath: "/tmp/captions.sock",
@@ -131,7 +139,9 @@ proc loadConfig*(path: string = ""): AppConfig =
     result.audio.sampleRate = a.getInt("sample_rate", result.audio.sampleRate)
     result.audio.channels = a.getInt("channels", result.audio.channels)
     result.audio.bufferSeconds = a.getInt("buffer_seconds", result.audio.bufferSeconds)
-    result.audio.source = a.getStr("source", result.audio.source)
+    result.audio.captureMic = a.getBool("capture_mic", result.audio.captureMic)
+    result.audio.captureSink = a.getBool("capture_sink", result.audio.captureSink)
+    result.audio.monitorDevice = a.getStr("monitor_device", result.audio.monitorDevice)
 
   if toml.hasKey("whisper"):
     let w = toml["whisper"]
@@ -163,8 +173,10 @@ proc loadConfig*(path: string = ""): AppConfig =
   if toml.hasKey("summary"):
     let s = toml["summary"]
     result.summary.enabled = s.getBool("enabled", result.summary.enabled)
-    result.summary.model = s.getStr("model", result.summary.model)
+    result.summary.modelPath = expandHome(s.getStr("model_path", result.summary.modelPath))
     result.summary.prompt = s.getStr("prompt", result.summary.prompt)
+    result.summary.gpuLayers = s.getInt("gpu_layers", result.summary.gpuLayers)
+    result.summary.maxTokens = s.getInt("max_tokens", result.summary.maxTokens)
 
   if toml.hasKey("daemon"):
     let d = toml["daemon"]

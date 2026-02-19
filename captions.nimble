@@ -1,7 +1,7 @@
 # Package
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "nilcoast"
-description   = "Real-time audio transcription overlay for Sway"
+description   = "Real-time audio transcription overlay"
 license       = "MIT"
 srcDir        = "src"
 bin           = @["captions"]

@@ -3,8 +3,14 @@ sample_rate = 16000
 channels = 1
 # Ring buffer duration in seconds
 buffer_seconds = 30
-# "sink" = system audio (speakers), "mic" = microphone
-source = "sink"
+# Capture microphone input (your voice)
+capture_mic = true
+# Capture system audio output (other people, media, etc.)
+capture_sink = true
+# Explicit monitor source name for system audio loopback.
+# Leave empty to auto-detect (finds first PulseAudio/PipeWire monitor source).
+# Example: "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+monitor_device = ""
 
 [whisper]
 # Path to whisper.cpp GGML model file
@@ -49,12 +55,16 @@ save_audio = true
 save_transcript = true
 
 [summary]
-# Enable AI summary generation after session ends (uses `llm` CLI tool)
+# Enable AI summary generation after session ends
 enabled = true
-# Model name passed to `llm -m` (empty = llm default)
-model = ""
+# Path to GGUF model file for summarization
+model_path = "~/.local/share/captions/phi-3.1-mini-128k-instruct-q4_k_m.gguf"
 # Prompt prepended to transcript
 prompt = "Summarize the following transcript concisely, highlighting key points and action items:"
+# Number of GPU layers to offload (-1 = all, 0 = CPU only)
+gpu_layers = -1
+# Max tokens for summary output
+max_tokens = 256
 
 [daemon]
 socket_path = "/tmp/captions.sock"

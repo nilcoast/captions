@@ -5,6 +5,7 @@ import std/[os, net, nativesockets, atomics, strutils, logging, strformat, locks
 import ./gtk4_bindings
 import ./config
 import ./audio
+import ./audio_miniaudio
 import ./transcribe
 import ./overlay
 import ./recorder
@@ -12,8 +13,10 @@ import ./summary
 
 type
   SessionState = object
-    ring: ptr RingBuffer
-    capture: ptr AudioCapture
+    micRing: ptr RingBuffer
+    sinkRing: ptr RingBuffer
+    micCapture: ptr AudioCapture
+    sinkCapture: ptr AudioCapture
     transcriber: ptr Transcriber
     wavRecorder: ptr WavRecorder
     sessionDir: string
@@ -53,25 +56,47 @@ proc startSession(d: Daemon) =
   let sessDir = sessionDir(d.cfg.recording)
   sess.sessionDir = sessDir
 
-  # Init ring buffer
-  sess.ring = initRingBuffer(d.cfg.audio.bufferSeconds, d.cfg.audio.sampleRate)
+  # Init ring buffers and captures for enabled sources
+  var rings: seq[ptr RingBuffer]
 
-  # Init audio capture
-  sess.capture = newAudioCapture(d.cfg.audio, sess.ring)
+  if d.cfg.audio.captureMic:
+    sess.micRing = initRingBuffer(d.cfg.audio.bufferSeconds, d.cfg.audio.sampleRate)
+    sess.micCapture = newAudioCapture(d.cfg.audio, ckMic, sess.micRing)
+    rings.add(sess.micRing)
 
-  # Set up WAV recording callback
+  if d.cfg.audio.captureSink:
+    sess.sinkRing = initRingBuffer(d.cfg.audio.bufferSeconds, d.cfg.audio.sampleRate)
+    sess.sinkCapture = newAudioCapture(d.cfg.audio, ckSink, sess.sinkRing)
+    rings.add(sess.sinkRing)
+
+  if rings.len == 0:
+    warn "No audio sources enabled (capture_mic and capture_sink are both false)"
+    deallocShared(sess)
+    d.session = nil
+    return
+
+  # Set up WAV recording — record from whichever source is active.
+  # When both are active, we record from the first source only (mic).
+  # The full mixed audio is in the transcript via whisper.
   if d.cfg.recording.saveAudio:
     createDir(sessDir)
     var rec = cast[ptr WavRecorder](allocShared0(sizeof(WavRecorder)))
     rec[] = newWavRecorder(sessDir, d.cfg.audio.sampleRate, d.cfg.audio.channels)
     sess.wavRecorder = rec
 
-    sess.capture.onSamples = proc(data: ptr float32, count: int) {.gcsafe.} =
-      if sess.wavRecorder != nil:
-        writeSamples(sess.wavRecorder[], data, count)
+    # Attach recording callback to both captures — mixer sums into WAV
+    let wavRec = sess.wavRecorder
+    let recordCb = proc(data: ptr float32, count: int) {.gcsafe.} =
+      if wavRec != nil:
+        writeSamples(wavRec[], data, count)
 
-  # Init transcriber
-  sess.transcriber = newTranscriber(d.cfg.whisper, d.cfg.audio, sess.ring, addr sess.active)
+    if sess.micCapture != nil:
+      sess.micCapture.onSamples = recordCb
+    if sess.sinkCapture != nil:
+      sess.sinkCapture.onSamples = recordCb
+
+  # Init transcriber with all active ring buffers
+  sess.transcriber = newTranscriber(d.cfg.whisper, d.cfg.audio, rings, addr sess.active)
 
   # Transcription callback — sends text to overlay + collects transcript
   sess.transcriber.onText = proc(text: string) {.gcsafe.} =
@@ -82,8 +107,11 @@ proc startSession(d: Daemon) =
     sess.transcript.add(text)
     release(sess.transcriptLock)
 
-  # Start capture and transcription
-  start(sess.capture)
+  # Start captures and transcription
+  if sess.micCapture != nil:
+    start(sess.micCapture)
+  if sess.sinkCapture != nil:
+    start(sess.sinkCapture)
   start(sess.transcriber)
 
   # Show overlay via idle callback
@@ -107,8 +135,11 @@ proc stopSession(d: Daemon) =
   # Join transcriber thread
   join(sess.transcriber)
 
-  # Stop audio capture
-  stop(sess.capture)
+  # Stop audio captures
+  if sess.micCapture != nil:
+    stop(sess.micCapture)
+  if sess.sinkCapture != nil:
+    stop(sess.sinkCapture)
 
   # Finalize WAV
   if sess.wavRecorder != nil:
@@ -123,19 +154,25 @@ proc stopSession(d: Daemon) =
     writeFile(path, sess.transcript)
     info &"Transcript saved: {path}"
 
-  # Spawn summary generation
-  spawnSummary(d.cfg.summary, sess.transcript, sess.sessionDir)
-
   # Hide overlay via idle callback
   proc hideCb(data: pointer): cint {.cdecl.} =
     if gOverlay != nil: hideOverlay(gOverlay)
     return 0
   discard g_idle_add(hideCb, nil)
 
+  # Spawn summary generation (background thread — non-blocking)
+  spawnSummary(d.cfg.summary, sess.transcript, sess.sessionDir)
+
   # Cleanup
   destroy(sess.transcriber)
-  destroy(sess.capture)
-  destroyRingBuffer(sess.ring)
+  if sess.micCapture != nil:
+    destroy(sess.micCapture)
+  if sess.sinkCapture != nil:
+    destroy(sess.sinkCapture)
+  if sess.micRing != nil:
+    destroyRingBuffer(sess.micRing)
+  if sess.sinkRing != nil:
+    destroyRingBuffer(sess.sinkRing)
   deinitLock(sess.transcriptLock)
   deallocShared(sess)
   d.session = nil

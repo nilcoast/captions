@@ -100,21 +100,25 @@ type
     ctx: WhisperContextPtr
     cfg: WhisperConfig
     audioCfg: AudioConfig
-    ring: ptr RingBuffer
+    rings: array[2, ptr RingBuffer]  # [0] = mic, [1] = sink (nil if unused)
+    numRings: int
     active*: ptr Atomic[bool]
     thread: Thread[ptr Transcriber]
     onText*: proc(text: string) {.gcsafe.}
     promptTokens: seq[cint]
-    lastTotal: int64
+    lastTotals: array[2, int64]
 
-proc newTranscriber*(cfg: WhisperConfig, audioCfg: AudioConfig, ring: ptr RingBuffer,
+proc newTranscriber*(cfg: WhisperConfig, audioCfg: AudioConfig,
+                     rings: openArray[ptr RingBuffer],
                      active: ptr Atomic[bool]): ptr Transcriber =
   result = cast[ptr Transcriber](allocShared0(sizeof(Transcriber)))
   result.cfg = cfg
   result.audioCfg = audioCfg
-  result.ring = ring
+  result.numRings = min(rings.len, 2)
+  for i in 0 ..< result.numRings:
+    result.rings[i] = rings[i]
   result.active = active
-  result.lastTotal = 0
+  result.lastTotals = [0'i64, 0'i64]
   result.onText = nil
 
   if not fileExists(cfg.modelPath):
@@ -126,6 +130,20 @@ proc newTranscriber*(cfg: WhisperConfig, audioCfg: AudioConfig, ring: ptr RingBu
   if result.ctx == nil:
     error "Failed to initialize whisper context"
 
+proc mixBuffers(bufs: openArray[seq[float32]]): seq[float32] =
+  ## Mix multiple audio buffers by summing samples and clamping to [-1, 1].
+  var maxLen = 0
+  for b in bufs:
+    if b.len > maxLen: maxLen = b.len
+  result = newSeq[float32](maxLen)
+  for b in bufs:
+    for i in 0 ..< b.len:
+      result[i] += b[i]
+  # Clamp
+  for i in 0 ..< result.len:
+    if result[i] > 1.0f: result[i] = 1.0f
+    elif result[i] < -1.0f: result[i] = -1.0f
+
 proc transcribeLoop(t: ptr Transcriber) {.thread.} =
   let chunkSamples = (t.cfg.chunkMs * t.audioCfg.sampleRate) div 1000
   let overlapSamples = (t.cfg.overlapMs * t.audioCfg.sampleRate) div 1000
@@ -133,19 +151,30 @@ proc transcribeLoop(t: ptr Transcriber) {.thread.} =
   let sleepMs = t.cfg.chunkMs
 
   while t.active[].load(moRelaxed):
-    # Wait until enough samples are available
-    let available = t.ring.totalWritten - t.lastTotal
-    if available < chunkSamples.int64:
+    # Wait until at least one ring has enough samples
+    var anyReady = false
+    for i in 0 ..< t.numRings:
+      let available = t.rings[i].totalWritten - t.lastTotals[i]
+      if available >= chunkSamples.int64:
+        anyReady = true
+        break
+    if not anyReady:
       sleep(50)
       continue
 
-    # Read samples from ring buffer (chunk + overlap for context)
-    var samples = read(t.ring, readSamples)
+    # Read from all active ring buffers and mix
+    var bufs: seq[seq[float32]]
+    for i in 0 ..< t.numRings:
+      let ring = t.rings[i]
+      bufs.add(read(ring, readSamples))
+      t.lastTotals[i] = ring.totalWritten
+
+    var samples = if bufs.len == 1: bufs[0]
+                  else: mixBuffers(bufs)
+
     if samples.len == 0:
       sleep(50)
       continue
-
-    t.lastTotal = t.ring.totalWritten
 
     # Skip silence — compute RMS energy
     var sumSq: float64 = 0
@@ -170,6 +199,7 @@ proc transcribeLoop(t: ptr Transcriber) {.thread.} =
     params.language = t.cfg.language.cstring
     params.suppress_blank = true
     params.suppress_nst = true
+    params.tdrz_enable = true
 
     # Use prompt tokens from previous chunk for continuity
     if t.promptTokens.len > 0:
@@ -202,9 +232,13 @@ proc transcribeLoop(t: ptr Transcriber) {.thread.} =
       for j in 0 ..< nTokens:
         t.promptTokens[j] = whisper_full_get_token_id(t.ctx, lastSeg.cint, j.cint)
 
-    # Send text to callback
+    # Send text to callback — split on speaker turns so each gets its own line
     if text.len > 0 and t.onText != nil:
-      t.onText(text)
+      let parts = text.split("[SPEAKER_TURN]")
+      for part in parts:
+        let trimmed = part.strip()
+        if trimmed.len > 0:
+          t.onText(trimmed)
 
     sleep(sleepMs)
 
@@ -212,7 +246,8 @@ proc start*(t: ptr Transcriber) =
   if t.ctx == nil:
     error "Cannot start transcriber: no whisper context"
     return
-  t.lastTotal = t.ring.totalWritten
+  for i in 0 ..< t.numRings:
+    t.lastTotals[i] = t.rings[i].totalWritten
   t.promptTokens = @[]
   createThread(t.thread, transcribeLoop, t)
 

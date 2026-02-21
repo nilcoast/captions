@@ -16,9 +16,9 @@ endif
 
 BINDIR ?= $(PREFIX)/bin
 WHISPER_MODEL_URL ?= https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
-SUMMARY_MODEL_URL ?= https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf
+SUMMARY_MODEL_URL ?= https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf
 
-.PHONY: build release install install-model install-summary-model install-config install-service uninstall clean
+.PHONY: build release install install-model install-summary-model install-config install-service uninstall clean test-models download-test-models
 
 build:
 	nim c --threads:on --mm:orc -o:captions src/captions.nim
@@ -118,3 +118,20 @@ test-sck:
 
 clean:
 	rm -f captions test_sck
+	rm -f captions
+	rm -f captions
+	rm -f test_models
+
+test-models: test_models.nim
+	@echo "Building model comparison test..."
+	nim c --threads:on --mm:orc -o:test_models test_models.nim
+	@echo ""
+	@echo "Running comparison (this may take several minutes)..."
+	@echo ""
+	./test_models
+
+download-test-models:
+	@echo "This will download ~32GB of models for testing."
+	@echo "Models: Qwen2.5-7B, 14B, and 32B"
+	@echo ""
+	./download_test_models.sh

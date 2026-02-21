@@ -24,10 +24,6 @@ static void data_callback(ma_device* pDevice, void* pOutput, const void* pInput,
     MaCapture* cap = (MaCapture*)pDevice->pUserData;
     if (cap && cap->callback && pInput) {
         cap->callback((const float*)pInput, (int)frameCount, cap->userdata);
-        static int callCount = 0;
-        if (++callCount == 1 || callCount == 100) {
-            fprintf(stderr, "ma_helper: data_callback called (count=%d, frames=%u)\n", callCount, frameCount);
-        }
     }
 }
 
@@ -112,23 +108,12 @@ int ma_capture_start(MaCapture* cap, const char* device_name,
     config.dataCallback = data_callback;
     config.pUserData = cap;
 
-    ma_result initResult = ma_device_init(&cap->context, &config, &cap->device);
-    if (initResult != MA_SUCCESS) {
-        fprintf(stderr, "ma_helper: device init failed: %s\n", ma_result_description(initResult));
+    if (ma_device_init(&cap->context, &config, &cap->device) != MA_SUCCESS) {
         return -3;
     }
     cap->device_initialized = 1;
 
-    fprintf(stderr, "ma_helper: device '%s' initialized (backend=%s, format=%d, channels=%d, sampleRate=%d)\n",
-            cap->device.capture.name,
-            ma_get_backend_name(cap->context.backend),
-            cap->device.capture.format,
-            cap->device.capture.channels,
-            cap->device.sampleRate);
-
-    ma_result startResult = ma_device_start(&cap->device);
-    if (startResult != MA_SUCCESS) {
-        fprintf(stderr, "ma_helper: device start failed: %s\n", ma_result_description(startResult));
+    if (ma_device_start(&cap->device) != MA_SUCCESS) {
         return -4;
     }
 

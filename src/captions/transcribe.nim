@@ -184,12 +184,9 @@ proc transcribeLoop(t: ptr Transcriber) {.thread.} =
     for i in 0 ..< samples.len:
       sumSq += float64(samples[i]) * float64(samples[i])
     let rms = sqrt(sumSq / float64(samples.len))
-    debug "transcribe: chunk " & $samples.len & " samples, rms=" & $rms
     if rms < SILENCE_RMS_THRESHOLD:
       sleep(sleepMs)
       continue
-
-    info "transcribe: processing chunk (rms=" & $rms & ", samples=" & $samples.len & ")"
 
     # Set up whisper params
     let strategy = if t.cfg.strategy == "beam": WHISPER_SAMPLING_BEAM_SEARCH
@@ -223,7 +220,6 @@ proc transcribeLoop(t: ptr Transcriber) {.thread.} =
 
     # Extract text
     let nSeg = whisper_full_n_segments(t.ctx)
-    info "transcribe: whisper returned " & $nSeg & " segments"
     var text = ""
     for i in 0 ..< nSeg:
       let segText = $whisper_full_get_segment_text(t.ctx, i.cint)

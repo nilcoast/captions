@@ -92,7 +92,7 @@ proc startSession(d: Daemon) =
   if d.isActive:
     return
 
-  info "Starting capture session (thread=" & $getThreadId() & ")"
+  info "Starting capture session"
 
   let sess = cast[ptr SessionState](allocShared0(sizeof(SessionState)))
   initLock(sess.transcriptLock)
@@ -285,10 +285,8 @@ when defined(macosx):
   var nimSessionThread: Thread[Daemon]
 
   proc nimSessionLoop(d: Daemon) {.thread, gcsafe.} =
-    info "nimSessionLoop started (thread=" & $getThreadId() & ")"
     while true:
       let cmd = nimSessionChan.recv()
-      info "nimSessionLoop received: " & cmd & " (thread=" & $getThreadId() & ")"
       case cmd
       of "start":
         if not d.isActive:
@@ -303,11 +301,9 @@ when defined(macosx):
 
   # cdecl shims called from GCD — just forward to the Nim channel
   proc startSessionBg(ctx: pointer) {.cdecl.} =
-    info "startSessionBg dispatched (thread=" & $getThreadId() & ")"
     nimSessionChan.send("start")
 
   proc stopSessionBg(ctx: pointer) {.cdecl.} =
-    info "stopSessionBg dispatched (thread=" & $getThreadId() & ")"
     nimSessionChan.send("stop")
 
 proc handleCommand(d: Daemon, cmd: string): string =

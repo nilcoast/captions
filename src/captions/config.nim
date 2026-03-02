@@ -1,6 +1,7 @@
 ## Configuration loading from TOML with sensible defaults.
+## Includes saveConfig for round-tripping config back to disk.
 
-import std/[os, strutils]
+import std/[os, strutils, strformat]
 import parsetoml
 
 type
@@ -36,12 +37,27 @@ type
     saveAudio*: bool
     saveTranscript*: bool
 
+  ExternalSummaryConfig* = object
+    apiUrl*: string     # OpenAI-compatible API base URL
+    apiKey*: string     # plain text, "env:VAR_NAME", or "file:~/.config/captions/api_key"
+    model*: string      # e.g. "gpt-4o-mini"
+    maxTokens*: int     # max tokens for summary output
+
   SummaryConfig* = object
     enabled*: bool
     modelPath*: string  # path to GGUF model file
     prompt*: string
     gpuLayers*: int     # number of GPU layers to offload (-1 = all, 0 = CPU only)
     maxTokens*: int     # max tokens for summary output
+    backend*: string    # "local" (default) or "external"
+    external*: ExternalSummaryConfig
+
+  TrayConfig* = object
+    enabled*: bool
+
+  ShortcutConfig* = object
+    enabled*: bool
+    keybinding*: string  # "<Super>c" (Linux) / "Cmd+Shift+C" (macOS)
 
   DaemonConfig* = object
     socketPath*: string
@@ -53,6 +69,8 @@ type
     recording*: RecordingConfig
     summary*: SummaryConfig
     daemon*: DaemonConfig
+    tray*: TrayConfig
+    shortcut*: ShortcutConfig
 
 proc expandHome(path: string): string =
   if path.startsWith("~/"):
@@ -105,9 +123,23 @@ proc defaultConfig*(): AppConfig =
     prompt: "You are a precise summarization assistant. Summarize ONLY the information present in the following transcript. Do not add speculation or external information. Focus on:\n- Key topics discussed\n- Important points mentioned\n- Action items or decisions (if any)\nBe factual and concise.",
     gpuLayers: -1,
     maxTokens: 256,
+    backend: "local",
+    external: ExternalSummaryConfig(
+      apiUrl: "https://api.openai.com/v1",
+      apiKey: "",
+      model: "gpt-4o-mini",
+      maxTokens: 512,
+    ),
   )
   result.daemon = DaemonConfig(
     socketPath: "/tmp/captions.sock",
+  )
+  result.tray = TrayConfig(
+    enabled: true,
+  )
+  result.shortcut = ShortcutConfig(
+    enabled: true,
+    keybinding: when defined(macosx): "Cmd+Shift+C" else: "<Super>c",
   )
 
 proc getStr(t: TomlValueRef, key: string, default: string): string =
@@ -183,7 +215,116 @@ proc loadConfig*(path: string = ""): AppConfig =
     result.summary.prompt = s.getStr("prompt", result.summary.prompt)
     result.summary.gpuLayers = s.getInt("gpu_layers", result.summary.gpuLayers)
     result.summary.maxTokens = s.getInt("max_tokens", result.summary.maxTokens)
+    result.summary.backend = s.getStr("backend", result.summary.backend)
+    if s.hasKey("external"):
+      let e = s["external"]
+      result.summary.external.apiUrl = e.getStr("api_url", result.summary.external.apiUrl)
+      result.summary.external.apiKey = e.getStr("api_key", result.summary.external.apiKey)
+      result.summary.external.model = e.getStr("model", result.summary.external.model)
+      result.summary.external.maxTokens = e.getInt("max_tokens", result.summary.external.maxTokens)
 
   if toml.hasKey("daemon"):
     let d = toml["daemon"]
     result.daemon.socketPath = d.getStr("socket_path", result.daemon.socketPath)
+
+  if toml.hasKey("tray"):
+    let t = toml["tray"]
+    result.tray.enabled = t.getBool("enabled", result.tray.enabled)
+
+  if toml.hasKey("shortcut"):
+    let sc = toml["shortcut"]
+    result.shortcut.enabled = sc.getBool("enabled", result.shortcut.enabled)
+    result.shortcut.keybinding = sc.getStr("keybinding", result.shortcut.keybinding)
+
+proc configPath*(): string =
+  getConfigDir() / "captions" / "captions.toml"
+
+proc escToml(s: string): string =
+  ## Escape a string for TOML — double-quote with backslash escapes.
+  result = "\""
+  for c in s:
+    case c
+    of '\\': result.add("\\\\")
+    of '"': result.add("\\\"")
+    of '\n': result.add("\\n")
+    of '\r': result.add("\\r")
+    of '\t': result.add("\\t")
+    else: result.add(c)
+  result.add("\"")
+
+proc saveConfig*(cfg: AppConfig, path: string = "") =
+  ## Serialize config back to TOML.
+  var p = path
+  if p == "":
+    p = configPath()
+
+  createDir(parentDir(p))
+
+  var lines: seq[string]
+
+  lines.add("[audio]")
+  lines.add(&"sample_rate = {cfg.audio.sampleRate}")
+  lines.add(&"channels = {cfg.audio.channels}")
+  lines.add(&"buffer_seconds = {cfg.audio.bufferSeconds}")
+  lines.add(&"capture_mic = {cfg.audio.captureMic}")
+  lines.add(&"capture_sink = {cfg.audio.captureSink}")
+  lines.add(&"monitor_device = {escToml(cfg.audio.monitorDevice)}")
+  lines.add("")
+
+  lines.add("[whisper]")
+  lines.add(&"model_path = {escToml(cfg.whisper.modelPath)}")
+  lines.add(&"chunk_ms = {cfg.whisper.chunkMs}")
+  lines.add(&"overlap_ms = {cfg.whisper.overlapMs}")
+  lines.add(&"strategy = {escToml(cfg.whisper.strategy)}")
+  lines.add(&"threads = {cfg.whisper.threads}")
+  lines.add(&"language = {escToml(cfg.whisper.language)}")
+  lines.add("")
+
+  lines.add("[overlay]")
+  lines.add(&"font = {escToml(cfg.overlay.font)}")
+  lines.add(&"text_color = {escToml(cfg.overlay.textColor)}")
+  lines.add(&"bg_color = {escToml(cfg.overlay.bgColor)}")
+  lines.add(&"max_lines = {cfg.overlay.maxLines}")
+  lines.add(&"margin_bottom = {cfg.overlay.marginBottom}")
+  lines.add(&"margin_side = {cfg.overlay.marginSide}")
+  lines.add(&"fade_timeout = {cfg.overlay.fadeTimeout}")
+  lines.add(&"border_radius = {cfg.overlay.borderRadius}")
+  lines.add(&"padding = {cfg.overlay.padding}")
+  lines.add("")
+
+  lines.add("[recording]")
+  lines.add(&"output_dir = {escToml(cfg.recording.outputDir)}")
+  lines.add(&"save_audio = {cfg.recording.saveAudio}")
+  lines.add(&"save_transcript = {cfg.recording.saveTranscript}")
+  lines.add("")
+
+  lines.add("[summary]")
+  lines.add(&"enabled = {cfg.summary.enabled}")
+  lines.add(&"model_path = {escToml(cfg.summary.modelPath)}")
+  lines.add(&"prompt = {escToml(cfg.summary.prompt)}")
+  lines.add(&"gpu_layers = {cfg.summary.gpuLayers}")
+  lines.add(&"max_tokens = {cfg.summary.maxTokens}")
+  lines.add(&"backend = {escToml(cfg.summary.backend)}")
+  lines.add("")
+
+  lines.add("[summary.external]")
+  lines.add(&"api_url = {escToml(cfg.summary.external.apiUrl)}")
+  lines.add(&"api_key = {escToml(cfg.summary.external.apiKey)}")
+  lines.add(&"model = {escToml(cfg.summary.external.model)}")
+  lines.add(&"max_tokens = {cfg.summary.external.maxTokens}")
+  lines.add("")
+
+  lines.add("[daemon]")
+  lines.add(&"socket_path = {escToml(cfg.daemon.socketPath)}")
+  lines.add("")
+
+  lines.add("[tray]")
+  lines.add(&"enabled = {cfg.tray.enabled}")
+  lines.add("")
+
+  lines.add("[shortcut]")
+  lines.add(&"enabled = {cfg.shortcut.enabled}")
+  lines.add(&"keybinding = {escToml(cfg.shortcut.keybinding)}")
+  lines.add("")
+
+  writeFile(p, lines.join("\n"))

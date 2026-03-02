@@ -58,13 +58,35 @@ save_transcript = true
 # Enable AI summary generation after session ends
 enabled = true
 # Path to GGUF model file for summarization
-model_path = "~/.local/share/captions/phi-3.1-mini-128k-instruct-q4_k_m.gguf"
+model_path = "~/.local/share/captions/qwen2.5-7b-instruct-q4_k_m.gguf"
 # Prompt prepended to transcript
 prompt = "Summarize the following transcript concisely, highlighting key points and action items:"
 # Number of GPU layers to offload (-1 = all, 0 = CPU only)
 gpu_layers = -1
 # Max tokens for summary output
 max_tokens = 256
+# Summary backend: "local" (embedded llama.cpp) or "external" (OpenAI-compatible API)
+backend = "local"
+
+[summary.external]
+# OpenAI-compatible API endpoint
+api_url = "https://api.openai.com/v1"
+# API key: plain text, "env:OPENAI_API_KEY", or "file:~/.config/captions/api_key"
+api_key = ""
+# Model name
+model = "gpt-4o-mini"
+# Max tokens for summary output
+max_tokens = 512
 
 [daemon]
 socket_path = "/tmp/captions.sock"
+
+[tray]
+# Show system tray icon (menu bar on macOS, status area on Linux)
+enabled = true
+
+[shortcut]
+# Enable global keyboard shortcut to toggle capture
+enabled = true
+# Key binding: "<Super>c" (Linux/Wayland) or "Cmd+Shift+C" (macOS)
+keybinding = "<Super>c"

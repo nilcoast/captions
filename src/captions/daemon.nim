@@ -22,6 +22,7 @@ else:
 import ./transcribe
 import ./recorder
 import ./summary
+import ./tray as tray_mod
 
 # Platform-conditional overlay import
 when defined(macosx):
@@ -77,6 +78,7 @@ type
     serverSock: Socket
     session: ptr SessionState
     running*: bool
+    tray*: tray_mod.Tray
 
 proc newDaemon*(cfg: AppConfig): Daemon =
   result = Daemon(
@@ -191,6 +193,10 @@ proc startSession(d: Daemon) =
     return 0
   dispatchAsync(showCb)
 
+  # Update tray status
+  if d.tray != nil:
+    tray_mod.setStatus(d.tray, true)
+
   info "Session started"
 
 proc stopSession(d: Daemon) =
@@ -247,6 +253,10 @@ proc stopSession(d: Daemon) =
   deinitLock(sess.transcriptLock)
   deallocShared(sess)
   d.session = nil
+
+  # Update tray status
+  if d.tray != nil:
+    tray_mod.setStatus(d.tray, false)
 
   info "Session stopped"
 
@@ -306,7 +316,7 @@ when defined(macosx):
   proc stopSessionBg(ctx: pointer) {.cdecl.} =
     nimSessionChan.send("stop")
 
-proc handleCommand(d: Daemon, cmd: string): string =
+proc handleCommand*(d: Daemon, cmd: string): string =
   let c = cmd.strip().toLowerAscii()
   case c
   of "toggle":
@@ -331,6 +341,10 @@ proc handleCommand(d: Daemon, cmd: string): string =
     "stopped"
   of "status":
     if d.isActive: "active" else: "idle"
+  of "reload":
+    d.cfg = loadConfig()
+    info "Configuration reloaded"
+    "reloaded"
   of "quit":
     shutdownDaemon(d)
     "bye"

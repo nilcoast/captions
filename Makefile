@@ -18,7 +18,11 @@ BINDIR ?= $(PREFIX)/bin
 WHISPER_MODEL_URL ?= https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin
 SUMMARY_MODEL_URL ?= https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf
 
-.PHONY: build release install install-model install-summary-model install-config install-service uninstall clean test-models download-test-models
+.PHONY: build release install install-model install-summary-model install-config install-service uninstall clean test-models download-test-models deps
+
+# Linux build dependencies:
+#   apt install libayatana-appindicator3-dev libgtk-3-dev libgtk-4-dev libgtk4-layer-shell-dev
+# macOS: no additional dependencies (Cocoa frameworks used)
 
 build:
 	nim c --threads:on --mm:orc -o:captions src/captions.nim
@@ -135,3 +139,11 @@ download-test-models:
 	@echo "Models: Qwen2.5-7B, 14B, and 32B"
 	@echo ""
 	./download_test_models.sh
+
+deps:
+ifeq ($(UNAME_S),Darwin)
+	@echo "No additional dependencies needed on macOS."
+else
+	@echo "Installing Linux build dependencies..."
+	sudo apt install -y libayatana-appindicator3-dev libgtk-3-dev libgtk-4-dev libgtk4-layer-shell-dev
+endif

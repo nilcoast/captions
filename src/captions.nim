@@ -1,14 +1,15 @@
-## captions — Real-time audio transcription overlay for Sway.
+## captions — Real-time audio transcription overlay.
 ##
 ## Usage:
 ##   captions              Start the daemon
 ##   captions toggle       Toggle capture on/off
 ##   captions stop         Stop current capture session
 ##   captions status       Query daemon status
+##   captions reload       Reload configuration
 ##   captions quit         Shut down daemon
 
 import std/[os, strutils, logging, atomics, posix]
-import captions/[config, daemon]
+import captions/[config, daemon, tray, shortcuts, preferences]
 
 # Platform-specific overlay imports
 when defined(macosx):
@@ -38,7 +39,7 @@ proc main() =
   # CLI subcommands — send to running daemon
   if args.len > 0:
     let cmd = args[0].toLowerAscii()
-    if cmd in ["toggle", "stop", "status", "quit"]:
+    if cmd in ["toggle", "stop", "status", "reload", "quit"]:
       let resp = sendCommand(cfg.daemon.socketPath, cmd)
       echo resp
       quit(0)
@@ -48,6 +49,7 @@ proc main() =
       echo "  captions toggle       Toggle capture on/off"
       echo "  captions stop         Stop current capture session"
       echo "  captions status       Query daemon status"
+      echo "  captions reload       Reload configuration"
       echo "  captions quit         Shut down daemon"
       quit(0)
     else:
@@ -76,6 +78,30 @@ proc main() =
 
   # Init overlay
   let ov = initOverlay(cfg.overlay)
+
+  # Init system tray
+  if cfg.tray.enabled:
+    let t = initTray()
+    t.onToggle = proc() = discard handleCommand(d, "toggle")
+    t.onQuit = proc() = shutdownDaemon(d)
+    t.onPrefs = proc() =
+      if gPrefsWindow != nil:
+        showPreferences(gPrefsWindow, d.cfg)
+    d.tray = t
+    info "System tray initialized"
+
+  # Init global keyboard shortcut
+  if cfg.shortcut.enabled:
+    let sc = initShortcut(cfg.shortcut)
+    sc.onActivated = proc() = discard handleCommand(d, "toggle")
+    info "Global shortcut initialized"
+
+  # Init preferences window
+  let pw = initPrefsWindow(cfg)
+  pw.onSave = proc(newCfg: AppConfig) =
+    saveConfig(newCfg)
+    d.cfg = newCfg
+    info "Preferences saved"
 
   # Platform-specific timer setup for shutdown checking
   when defined(macosx):

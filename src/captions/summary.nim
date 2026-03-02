@@ -5,6 +5,7 @@
 import std/[os, strutils, strformat, logging, osproc]
 import ./config
 import ./llama_bindings
+import ./summary_external
 
 proc tokenize(vocab: LlamaVocabPtr, text: string, addSpecial: bool,
               parseSpecial: bool = false): seq[LlamaToken] =
@@ -175,7 +176,11 @@ proc summaryThreadProc(args: SummaryArgs) {.thread.} =
   let sessionDir = args.sessionDir
 
   info "Generating summary..."
-  let summary = generateSummary(cfg, transcript)
+  let summary = case cfg.backend
+    of "external":
+      generateSummaryExternal(cfg.external, cfg.prompt, transcript)
+    else:
+      generateSummary(cfg, transcript)
 
   if summary.len == 0:
     warn "Summary generation produced no output"
@@ -202,7 +207,7 @@ proc spawnSummary*(cfg: SummaryConfig, transcript: string, sessionDir: string) {
     info "Empty transcript, skipping summary"
     return
 
-  if cfg.modelPath == "":
+  if cfg.backend != "external" and cfg.modelPath == "":
     warn "No summary model path configured, skipping summary"
     return
 
